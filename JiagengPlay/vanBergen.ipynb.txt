@@ -1,0 +1,220 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "import scipy.optimize\n",
+    "import scipy.integrate\n",
+    "import scipy"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "nvox = 100 # Number of voxels\n",
+    "ntrials = 50 # Number of trials\n",
+    "nchan = 8 # Number of channels"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# functions\n",
+    "def fun_basis(s):\n",
+    "    TuningCentres = np.arange(0,2*np.pi-0.001,2*np.pi/8)\n",
+    "    s = np.ravel(s)\n",
+    "    c = np.maximum(0,np.cos(np.tile(s,[8,1]).T-TuningCentres))**5\n",
+    "    return c\n",
+    "\n",
+    "def MatProdDiag(mat1,mat2):\n",
+    "    M = np.multiply(mat1,mat2.T)\n",
+    "    out = np.sum(M, axis=1)\n",
+    "    return out\n",
+    "\n",
+    "def fun_minLL(s):\n",
+    "    bwc = b-W@fun_basis(s).T \n",
+    "    negll = 0.5*MatProdDiag(bwc.T@prec_mat,bwc)\n",
+    "    return negll\n",
+    "\n",
+    "def globminsearch():\n",
+    "    inits = np.linspace(0, 2*np.pi, 200)\n",
+    "    fvals = fun_minLL(inits)\n",
+    "    minI = np.argmin(fvals)\n",
+    "    sol, mll, iter, funcalls, warnflag = scipy.optimize.fmin(fun_minLL, x0=inits[minI],maxiter=1e10, xtol=1e-10,full_output=True,disp=False)\n",
+    "    return sol, mll\n",
+    "\n",
+    "def fun_lik(s):\n",
+    "    ll = np.exp(-fun_minLL(s)+mll)\n",
+    "    return ll\n",
+    "\n",
+    "def fun_Eth1(s):\n",
+    "    out = (fun_lik(s)/Integ).T*np.exp(1j*s)\n",
+    "    return out\n",
+    "\n",
+    "def complex_quadrature(func, a, b, **kwargs):\n",
+    "    def real_func(x):\n",
+    "        return scipy.real(func(x))\n",
+    "    def imag_func(x):\n",
+    "        return scipy.imag(func(x))\n",
+    "    real_integral = scipy.integrate.quad(real_func, a, b, **kwargs)\n",
+    "    imag_integral = scipy.integrate.quad(imag_func, a, b, **kwargs)\n",
+    "    return (real_integral[0] + 1j*imag_integral[0], real_integral[1:], imag_integral[1:])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Simulate generative model parameters & resulting covariance matrix\n",
+    "W = np.random.randn(nvox, nchan)\n",
+    "tau_sim = np.random.randn(nvox,1)*0.035+0.7\n",
+    "sig_sim = 0.3\n",
+    "rho_sim = 0.05"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Define $W$,$\\tau$,$\\sigma$,$\\rho$"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "cov_sim = (1-rho_sim)*np.diag(np.ravel(tau_sim)**2) + rho_sim*(np.matrix(tau_sim)@np.matrix(tau_sim).T) + sig_sim**2*(W@W.T)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Define $\\Omega$\n",
+    "$$\\Omega=(1-\\rho)I\\circ\\tau\\tau^T + \\rho\\tau\\tau^T + \\sigma^2WW^T$$"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "prec_mat = np.linalg.inv(cov_sim)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "Q = np.linalg.cholesky(cov_sim)\n",
+    "noise = (Q*np.random.randn(ntrials,nvox).T).T\n",
+    "s_sim = np.random.rand(ntrials,1)*2*np.pi\n",
+    "c_sim = fun_basis(s_sim)\n",
+    "samples = (W@c_sim.T).T + noise"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "est = np.zeros(ntrials)\n",
+    "unc = np.zeros(ntrials)\n",
+    "for iTrial in np.arange(ntrials):\n",
+    "    b = samples[iTrial, :].T\n",
+    "    # Find the maximum likelihood so we can normalize the likelihood to a numerically feasible range \n",
+    "    _, mll = globminsearch()\n",
+    "    # Compute the integral of the likelihood so we can normalize to a probability distribution over s\n",
+    "    Integ = scipy.integrate.quad(fun_lik, 0, 2*np.pi, epsabs=1e-12)[0]\n",
+    "    # Compute the first circular moment of the normalized likelihood\n",
+    "    E1 =complex_quadrature(fun_Eth1,0, 2*np.pi, epsabs= 1e-12)[0]\n",
+    "    \n",
+    "    # Compute the circular mean of the normalized likelihood\n",
+    "    est[iTrial] = np.mod(np.angle(E1), 2*np.pi)/np.pi*90\n",
+    "    # Compute the circular SD of the normalized likelihood          \n",
+    "    unc[iTrial] = np.sqrt(-2*np.log(abs(E1)))/np.pi*90"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "Text(0, 0.5, 'estimated')"
+      ]
+     },
+     "execution_count": 9,
+     "metadata": {},
+     "output_type": "execute_result"
+    },
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<Figure size 432x288 with 1 Axes>"
+      ]
+     },
+     "metadata": {
+      "needs_background": "light"
+     },
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.scatter(s_sim/2/np.pi*180,est)\n",
+    "plt.xlabel('simulated')\n",
+    "plt.ylabel('estimated')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
